@@ -5,9 +5,7 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from collections import defaultdict
 from math import log
-from sklearn.metrics import precision_score, recall_score, f1_score, average_precision_score
 import nltk
-
 
 # Εγκατάσταση nltk
 nltk.download('punkt')
@@ -23,24 +21,6 @@ def preprocess_text(text):
     tokens = [lemmatizer.lemmatize(token) for token in tokens]
     return tokens
 
-def evaluate_system(true_labels, predicted_labels):
-    precision = precision_score(true_labels, predicted_labels, zero_division=0)
-    recall = recall_score(true_labels, predicted_labels, zero_division=0)
-    f1 = f1_score(true_labels, predicted_labels, zero_division=0)
-    map_score = average_precision_score(true_labels, predicted_labels)
-
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1-Score: {f1:.4f}")
-    print(f"Mean Average Precision (MAP): {map_score:.4f}")
-
-    return {
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-        "map": map_score
-    }
-
 def load_articles(filename='wikipedia_articles.json'):
     with open(filename, 'r') as json_file:
         articles = json.load(json_file)
@@ -52,23 +32,18 @@ def load_reverse_index(filename='reverse_index.json'):
     return reverse_index
 
 def boolean_query_processing(query, reverse_index):
-    """
-    Διαχειρίζεται ερωτήματα Boolean που περιέχουν AND, OR, NOT.
-    """
-    query = query.upper()  # Ensure operators are uppercase
-    query_tokens = re.findall(r'[\w]+|AND|OR|NOT|\(|\)', query)  # Tokenize the query
+    query = query.upper()
+    query_tokens = re.findall(r'[\w]+|AND|OR|NOT|\(|\)', query)
 
-  
     term_postings = {}
     for token in query_tokens:
         if token not in {'AND', 'OR', 'NOT', '(', ')'}:
-            preprocessed_token = preprocess_text(token)[0]  # Single word preprocessing
+            preprocessed_token = preprocess_text(token)[0] if preprocess_text(token) else ""
             if preprocessed_token in reverse_index:
                 term_postings[token] = set(reverse_index[preprocessed_token])
             else:
                 term_postings[token] = set()
 
-    # AND OR NOT BOOLEAN
     def eval_query(tokens):
         stack = []
         for token in tokens:
@@ -87,7 +62,6 @@ def boolean_query_processing(query, reverse_index):
                 stack.append(term_postings.get(token, set()))
         return stack[0]
 
-    # 
     def infix_to_postfix(tokens):
         precedence = {'NOT': 3, 'AND': 2, 'OR': 1}
         output = []
@@ -101,7 +75,7 @@ def boolean_query_processing(query, reverse_index):
             elif token == ')':
                 while operators and operators[-1] != '(':
                     output.append(operators.pop())
-                operators.pop()  # Remove '('
+                operators.pop()
             else:
                 while (operators and operators[-1] != '(' and
                        precedence.get(token, 0) <= precedence.get(operators[-1], 0)):
@@ -115,7 +89,6 @@ def boolean_query_processing(query, reverse_index):
 
     postfix_query = infix_to_postfix(query_tokens)
     return list(eval_query(postfix_query))
-
 
 def vector_space_model(query, reverse_index, articles):
     query_tokens = preprocess_text(query)
@@ -133,7 +106,7 @@ def vector_space_model(query, reverse_index, articles):
                 result_scores[doc_id] += tf * idf * query_tf
 
     result_docs = sorted(result_scores.keys(), key=lambda doc_id: result_scores[doc_id], reverse=True)
-    return result_docs
+    return result_docs, result_scores
 
 def okapi_bm25(query, reverse_index, articles, k1=1.5, b=0.75):
     query_tokens = preprocess_text(query)
@@ -152,63 +125,39 @@ def okapi_bm25(query, reverse_index, articles, k1=1.5, b=0.75):
                 result_scores[doc_id] += bm25_score
 
     result_docs = sorted(result_scores.keys(), key=lambda doc_id: result_scores[doc_id], reverse=True)
-    return result_docs
+    return result_docs, result_scores
 
-def rank(result_doc_ids, query, articles):
-    query_tokens = preprocess_text(query)
-    ranked_results = []
-
-    for doc_id in result_doc_ids:
-        score = 0
-        for term in query_tokens:
-            score += articles[doc_id]['preprocessed_title'].count(term) + articles[doc_id]['preprocessed_content'].count(term)
-        ranked_results.append((doc_id, score))
-        
-    ranked_results = sorted(ranked_results, key=lambda result: result[1], reverse=True)
-    return [result[0] for result in ranked_results]
+def display_results(method, query, results, scores, articles):
+    print(f"\nEvaluating query: {query}")
+    print(f"Results ranked by {method.upper()}:")
+    for doc_id in results:
+        score = scores[doc_id]
+        print(f"- {articles[doc_id]['title']} (Score: {score:.4f}) - URL: {articles[doc_id]['url']}")
 
 def evaluate_queries(test_queries, articles, reverse_index, algo="BOOLEAN"):
-    all_metrics = []
-
     for test_query in test_queries:
         query = test_query["query"]
-        relevant_docs = set(test_query["relevant_docs"])
 
         if algo == "BOOLEAN":
             result_docs = boolean_query_processing(query, reverse_index)
+            print(f"Boolean results for query '{query}': {result_docs}")
         elif algo == "VSM":
-            result_docs = vector_space_model(query, reverse_index, articles)
+            result_docs, scores = vector_space_model(query, reverse_index, articles)
+            display_results("TF-IDF", query, result_docs, scores, articles)
         elif algo == "OBM":
-            result_docs = okapi_bm25(query, reverse_index, articles)
-
-
-
-        # Υπολογισμός True και Predicted Labels
-        true_labels = [1 if i in relevant_docs else 0 for i in range(len(articles))]
-        predicted_labels = [1 if i in result_docs else 0 for i in range(len(articles))]
-
-        print(f"Query: {query}")
-        print(f"Relevant Docs: {relevant_docs}")
-        print(f"Retrieved Docs: {set(result_docs)}")
-        print(f"True Labels: {true_labels}")
-        print(f"Predicted Labels: {predicted_labels}")
-
-        # Υπολογισμός Μετρικών
-        metrics = evaluate_system(true_labels, predicted_labels)
-        all_metrics.append(metrics)
-
-    return all_metrics
+            result_docs, scores = okapi_bm25(query, reverse_index, articles)
+            display_results("BM25", query, result_docs, scores, articles)
 
 if __name__ == '__main__':
     articles = load_articles()
     reverse_index = load_reverse_index()
 
     test_queries = [
-        {"query": "machine learning", "relevant_docs": [0, 2]},
-        {"query": "artificial intelligence", "relevant_docs": [1, 3]},
-        {"query": "data science", "relevant_docs": [2]},
-        {"query": "deep learning", "relevant_docs": [0, 1]},
-        {"query": "information retrieval", "relevant_docs": [3]}
+        {"query": "machine learning"},
+        {"query": "artificial intelligence"},
+        {"query": "data science"},
+        {"query": "deep learning"},
+        {"query": "information retrieval"}
     ]
 
     algo = input("Choose algorithm (BOOLEAN, VSM, OBM): ").strip().upper()
